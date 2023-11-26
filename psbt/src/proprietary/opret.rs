@@ -31,9 +31,10 @@
 //! opret commitment and populating PSBT with the data related to opret
 //! commitments.
 
-use bitcoin::psbt::raw::ProprietaryKey;
-use bitcoin::psbt::Output;
+use bpstd::hashes::hex::{Case, DisplayHex};
 use commit_verify::mpc;
+
+use crate::{Output, PropKey};
 
 /// PSBT proprietary key prefix used for opret commitment.
 pub const PSBT_OPRET_PREFIX: &[u8] = b"OPRET";
@@ -49,25 +50,25 @@ pub const PSBT_OUT_OPRET_COMMITMENT: u8 = 0x01;
 /// keys.
 pub trait ProprietaryKeyOpret {
     /// Constructs [`PSBT_OUT_OPRET_HOST`] proprietary key.
-    fn opret_host() -> ProprietaryKey {
-        ProprietaryKey {
-            prefix: PSBT_OPRET_PREFIX.to_vec(),
-            subtype: PSBT_OUT_OPRET_HOST,
-            key: vec![],
+    fn opret_host() -> PropKey {
+        PropKey {
+            identifier: PSBT_OPRET_PREFIX.to_hex_string(Case::Upper),
+            subtype: PSBT_OUT_OPRET_HOST.into(),
+            data: vec![],
         }
     }
 
     /// Constructs [`PSBT_OUT_OPRET_COMMITMENT`] proprietary key.
-    fn opret_commitment() -> ProprietaryKey {
-        ProprietaryKey {
-            prefix: PSBT_OPRET_PREFIX.to_vec(),
-            subtype: PSBT_OUT_OPRET_COMMITMENT,
-            key: vec![],
+    fn opret_commitment() -> PropKey {
+        PropKey {
+            identifier: PSBT_OPRET_PREFIX.to_hex_string(Case::Upper),
+            subtype: PSBT_OUT_OPRET_COMMITMENT.into(),
+            data: vec![],
         }
     }
 }
 
-impl ProprietaryKeyOpret for ProprietaryKey {}
+impl ProprietaryKeyOpret for PropKey {}
 
 /// Errors processing opret-related proprietary PSBT keys and their values.
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, Display, Error)]
@@ -100,7 +101,7 @@ impl OutputOpret for Output {
     #[inline]
     fn is_opret_host(&self) -> bool {
         // TODO: Check that output is OP_RETURN
-        self.proprietary.contains_key(&ProprietaryKey::opret_host()) // && self.script.is_op_return()
+        self.proprietary.contains_key(&PropKey::opret_host()) // && self.script.is_op_return()
     }
 
     /// Allows opret commitments for this output. Returns whether opret
@@ -115,10 +116,7 @@ impl OutputOpret for Output {
         /* if !self.script.is_op_return() {
             return Err(OpretKeyError::NonOpReturnOutput);
         } */
-        Ok(self
-            .proprietary
-            .insert(ProprietaryKey::opret_host(), vec![])
-            .is_some())
+        Ok(self.proprietary.insert(PropKey::opret_host(), vec![].into()).is_some())
     }
 
     /// Detects presence of a valid [`PSBT_OUT_OPRET_COMMITMENT`].
@@ -139,9 +137,7 @@ impl OutputOpret for Output {
         if !self.script.is_op_return() {
             return Err(OpretKeyError::NonOpReturnOutput);
         }*/
-        Ok(self
-            .proprietary
-            .contains_key(&ProprietaryKey::opret_commitment()))
+        Ok(self.proprietary.contains_key(&PropKey::opret_commitment()))
     }
 
     /// Returns valid opret commitment from the [`PSBT_OUT_OPRET_COMMITMENT`]
@@ -162,8 +158,8 @@ impl OutputOpret for Output {
         /*if !self.script.is_op_return() {
             return Err(OpretKeyError::NonOpReturnOutput);
         }*/
-        let data = self.proprietary.get(&ProprietaryKey::opret_commitment())?;
-        mpc::Commitment::from_slice(data)
+        let data = self.proprietary.get(&PropKey::opret_commitment())?;
+        Some(mpc::Commitment::copy_from_slice(data).expect("invalid Message"))
     }
 
     /// Assigns value of the opreturn commitment to this PSBT output, by
@@ -186,8 +182,7 @@ impl OutputOpret for Output {
             return Err(OpretKeyError::OutputAlreadyHasCommitment);
         }
 
-        self.proprietary
-            .insert(ProprietaryKey::opret_commitment(), commitment.to_vec());
+        self.proprietary.insert(PropKey::opret_commitment(), commitment.to_vec().into());
 
         Ok(())
     }

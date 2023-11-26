@@ -30,6 +30,7 @@ mod data;
 mod keys;
 mod maps;
 mod coders;
+mod proprietary;
 
 pub use coders::{Decode, DecodeError, Encode, PsbtError};
 pub use data::{

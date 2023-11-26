@@ -19,24 +19,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use amplify::num::u5;
-use amplify::RawArray;
-use bitcoin::hashes::Hash;
-use bitcoin::psbt::Psbt;
-use bitcoin::secp256k1::SECP256K1;
-use bitcoin::taproot::{TapTree, TaprootBuilder, TaprootBuilderError};
-use bitcoin::ScriptBuf;
-use bp::dbc::tapret::{TapretCommitment, TapretPathProof, TapretProof};
-use bp::dbc::Proof;
-use bp::seals::txout::CloseMethod;
-use bp::TapScript;
+use amplify::num::{u5, u7};
+use bpstd::{
+    LeafInfo, ScriptPubkey, TapLeafHash, TapNodeHash, TapScript, TapTreeBuilder, Tx,
+    UnfinalizedTree,
+};
 use commit_verify::{mpc, CommitVerify, CommitmentId, TryCommitVerify};
-use rgb::Anchor;
+use dbc::tapret::{TapretCommitment, TapretPathProof, TapretProof};
+use dbc::{Anchor, Proof};
+use seals::txout::CloseMethod;
 
-use crate::psbt::lnpbp4::OutputLnpbp4;
-use crate::psbt::opret::OutputOpret;
-use crate::psbt::tapret::{OutputTapret, TapretKeyError};
-use crate::psbt::{Lnpbp4PsbtError, OpretKeyError, PSBT_OUT_LNPBP4_MIN_TREE_DEPTH};
+use super::lnpbp4::OutputLnpbp4;
+use super::opret::OutputOpret;
+use super::tapret::OutputTapret;
+use super::{Lnpbp4PsbtError, OpretKeyError, TapretKeyError, PSBT_OUT_LNPBP4_MIN_TREE_DEPTH};
+use crate::Psbt;
 
 #[derive(Clone, PartialEq, Eq, Debug, Display, Error, From)]
 #[display(doc_comments)]
@@ -74,7 +71,7 @@ pub enum DbcPsbtError {
 
     #[from]
     #[display(inner)]
-    TaprootBuilder(TaprootBuilderError),
+    TaprootBuilder(UnfinalizedTree),
 }
 
 pub trait PsbtDbc {
@@ -93,32 +90,29 @@ impl PsbtDbc for Psbt {
             .outputs
             .iter()
             .filter(|output| output.is_tapret_host() | output.is_opret_host())
-            .count() >
-            1
+            .count()
+            > 1
         {
             return Err(DbcPsbtError::MultipleCommitmentHosts);
         }
 
-        let (vout, output) = self
+        let (_, output) = self
             .outputs
             .iter_mut()
             .enumerate()
             .find(|(_, output)| {
-                (output.is_tapret_host() && method == CloseMethod::TapretFirst) |
-                    (output.is_opret_host() && method == CloseMethod::OpretFirst)
+                (output.is_tapret_host() && method == CloseMethod::TapretFirst)
+                    | (output.is_opret_host() && method == CloseMethod::OpretFirst)
             })
             .ok_or(DbcPsbtError::NoHostOutput)?;
-        let txout = &mut self.unsigned_tx.output[vout];
 
         let messages = output.lnpbp4_message_map()?;
-        let min_depth = u5::with(
-            output
-                .lnpbp4_min_tree_depth()
-                .unwrap_or(PSBT_OUT_LNPBP4_MIN_TREE_DEPTH),
-        );
+        let min_depth =
+            u5::with(output.lnpbp4_min_tree_depth().unwrap_or(PSBT_OUT_LNPBP4_MIN_TREE_DEPTH));
         let source = mpc::MultiSource {
             min_depth,
             messages,
+            static_entropy: None,
         };
         let merkle_tree = mpc::MerkleTree::try_commit(&source)?;
         let entropy = merkle_tree.entropy();
@@ -132,34 +126,36 @@ impl PsbtDbc for Psbt {
                 return Err(DbcPsbtError::TapTreeNonEmpty);
             }
             let tapret_commitment = &TapretCommitment::with(commitment, 0);
-            let script_commitment =
-                ScriptBuf::from_bytes(TapScript::commit(tapret_commitment).to_vec());
-            let builder = TaprootBuilder::with_capacity(1).add_leaf(0, script_commitment)?;
-            let tap_tree = TapTree::try_from(builder.clone()).expect("builder is complete");
+            let script_commitment = TapScript::commit(tapret_commitment);
+
+            let commitment_leaf = LeafInfo::tap_script(u7::with(0), script_commitment.clone());
+            let mut builder = TapTreeBuilder::new();
+            builder.push_leaf(commitment_leaf).expect("builder is complete");
+
+            let tap_tree = builder.finish()?;
             let internal_pk = output.tap_internal_key.ok_or(DbcPsbtError::NoInternalKey)?;
             let tapret_proof = TapretProof {
                 path_proof: TapretPathProof::root(tapret_commitment.nonce),
-                internal_pk: internal_pk.into(),
+                internal_pk,
             };
-            output.tap_tree = Some(tap_tree);
-            let spent_info = builder
-                .finalize(SECP256K1, internal_pk)
-                .expect("complete tree");
-            let merkle_root = spent_info.merkle_root().expect("script tree present");
 
+            output.tap_tree = Some(tap_tree.clone());
+
+            // let merkle_root = tap_tree.merkle_root();
+            let merkle_root: TapNodeHash = TapLeafHash::with_tap_script(&script_commitment).into();
             output.set_tapret_commitment(commitment, &tapret_proof.path_proof)?;
-            txout.script_pubkey = ScriptBuf::new_v1_p2tr(SECP256K1, internal_pk, Some(merkle_root));
+            output.script = ScriptPubkey::p2tr(internal_pk, Some(merkle_root));
             Proof::TapretFirst(tapret_proof)
         } else if method == CloseMethod::OpretFirst {
             output.set_opret_commitment(commitment)?;
-            txout.script_pubkey = ScriptBuf::new_op_return(&commitment.to_raw_array());
+            output.script = ScriptPubkey::op_return(&commitment.to_byte_array());
             Proof::OpretFirst
         } else {
             return Err(DbcPsbtError::MethodUnsupported(method));
         };
 
         let anchor = Anchor {
-            txid: self.unsigned_tx.txid().to_byte_array().into(),
+            txid: Tx::from(self.to_unsigned_tx()).txid(),
             mpc_proof: mpc::MerkleBlock::from(merkle_tree),
             dbc_proof: proof,
         };

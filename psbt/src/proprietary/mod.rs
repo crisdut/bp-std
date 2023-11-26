@@ -24,16 +24,11 @@
 //! Supports Tapret, Opret, P2C and S2C commitments and LNPBP4 structures used
 //! by all of them.
 
-// TODO: Move to BP wallet
 mod lnpbp4;
-// TODO: Move to BP wallet
 mod dbc;
-// TODO: Move to BP wallet
 pub mod opret;
-// TODO: Move to BP wallet
 pub mod tapret;
 
-pub use dbc::{DbcPsbtError, PsbtDbc};
 pub use lnpbp4::{
     Lnpbp4PsbtError, ProprietaryKeyLnpbp4, PSBT_LNPBP4_PREFIX, PSBT_OUT_LNPBP4_ENTROPY,
     PSBT_OUT_LNPBP4_MESSAGE, PSBT_OUT_LNPBP4_MIN_TREE_DEPTH,
@@ -45,9 +40,4 @@ pub use opret::{
 pub use tapret::{
     ProprietaryKeyTapret, TapretKeyError, PSBT_IN_TAPRET_TWEAK, PSBT_OUT_TAPRET_COMMITMENT,
     PSBT_OUT_TAPRET_HOST, PSBT_OUT_TAPRET_PROOF, PSBT_TAPRET_PREFIX,
-};
-
-pub use self::rgb::{
-    ProprietaryKeyRgb, RgbExt, RgbInExt, RgbOutExt, RgbPsbtError, PSBT_GLOBAL_RGB_TRANSITION,
-    PSBT_IN_RGB_CONSUMED_BY, PSBT_OUT_RGB_VELOCITY_HINT, PSBT_RGB_PREFIX,
 };

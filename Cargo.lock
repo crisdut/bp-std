@@ -554,11 +554,15 @@ version = "0.11.0-beta.2"
 dependencies = [
  "amplify",
  "base64",
+ "bp-dbc",
+ "bp-seals",
  "bp-std",
  "chrono",
+ "commit_verify",
  "descriptors",
  "indexmap",
  "serde",
+ "strict_encoding",
 ]
 
 [[package]]

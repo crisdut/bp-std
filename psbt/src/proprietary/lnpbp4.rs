@@ -23,9 +23,10 @@ use std::collections::BTreeMap;
 
 use amplify::confinement;
 use amplify::confinement::Confined;
-use bitcoin::psbt::raw::ProprietaryKey;
-use bitcoin::psbt::Output;
+use bpstd::hashes::hex::{Case, DisplayHex};
 use commit_verify::mpc::{self, Message, ProtocolId};
+
+use crate::{Output, PropKey};
 
 /// PSBT proprietary key prefix used for LNPBP4 commitment-related data.
 pub const PSBT_LNPBP4_PREFIX: &[u8] = b"LNPBP4";
@@ -42,36 +43,36 @@ pub const PSBT_OUT_LNPBP4_MIN_TREE_DEPTH: u8 = 0x04;
 /// Extension trait for static functions returning LNPBP4-related proprietary
 /// keys.
 pub trait ProprietaryKeyLnpbp4 {
-    fn lnpbp4_message(protocol_id: ProtocolId) -> ProprietaryKey;
-    fn lnpbp4_entropy() -> ProprietaryKey;
-    fn lnpbp4_min_tree_depth() -> ProprietaryKey;
+    fn lnpbp4_message(protocol_id: ProtocolId) -> PropKey;
+    fn lnpbp4_entropy() -> PropKey;
+    fn lnpbp4_min_tree_depth() -> PropKey;
 }
 
-impl ProprietaryKeyLnpbp4 for ProprietaryKey {
+impl ProprietaryKeyLnpbp4 for PropKey {
     /// Constructs [`PSBT_OUT_LNPBP4_MESSAGE`] proprietary key.
-    fn lnpbp4_message(protocol_id: ProtocolId) -> ProprietaryKey {
-        ProprietaryKey {
-            prefix: PSBT_LNPBP4_PREFIX.to_vec(),
-            subtype: PSBT_OUT_LNPBP4_MESSAGE,
-            key: protocol_id.to_vec(),
+    fn lnpbp4_message(protocol_id: ProtocolId) -> PropKey {
+        PropKey {
+            identifier: PSBT_LNPBP4_PREFIX.to_hex_string(Case::Upper),
+            subtype: PSBT_OUT_LNPBP4_MESSAGE.into(),
+            data: protocol_id.to_vec(),
         }
     }
 
     /// Constructs [`PSBT_OUT_LNPBP4_ENTROPY`] proprietary key.
-    fn lnpbp4_entropy() -> ProprietaryKey {
-        ProprietaryKey {
-            prefix: PSBT_LNPBP4_PREFIX.to_vec(),
-            subtype: PSBT_OUT_LNPBP4_ENTROPY,
-            key: empty!(),
+    fn lnpbp4_entropy() -> PropKey {
+        PropKey {
+            identifier: PSBT_LNPBP4_PREFIX.to_hex_string(Case::Upper),
+            subtype: PSBT_OUT_LNPBP4_ENTROPY.into(),
+            data: empty!(),
         }
     }
 
     /// Constructs [`PSBT_OUT_LNPBP4_MIN_TREE_DEPTH`] proprietary key.
-    fn lnpbp4_min_tree_depth() -> ProprietaryKey {
-        ProprietaryKey {
-            prefix: PSBT_LNPBP4_PREFIX.to_vec(),
-            subtype: PSBT_OUT_LNPBP4_MIN_TREE_DEPTH,
-            key: empty!(),
+    fn lnpbp4_min_tree_depth() -> PropKey {
+        PropKey {
+            identifier: PSBT_LNPBP4_PREFIX.to_hex_string(Case::Upper),
+            subtype: PSBT_OUT_LNPBP4_MIN_TREE_DEPTH.into(),
+            data: empty!(),
         }
     }
 }
@@ -81,7 +82,6 @@ impl ProprietaryKeyLnpbp4 for ProprietaryKey {
 #[display(doc_comments)]
 pub enum Lnpbp4PsbtError {
     /// the key contains invalid value.
-    #[from(bitcoin::hashes::Error)]
     InvalidKeyValue,
 
     /// message map produced from PSBT inputs exceeds maximum size bounds.
@@ -117,12 +117,14 @@ impl OutputLnpbp4 for Output {
             .iter()
             .filter(|(key, _)| {
                 // TODO: Error when only a single key is present
-                key.prefix == PSBT_LNPBP4_PREFIX && key.subtype == PSBT_OUT_LNPBP4_MESSAGE
+                key.identifier == PSBT_LNPBP4_PREFIX.to_hex_string(Case::Upper)
+                    && key.subtype == PSBT_OUT_LNPBP4_MESSAGE as u64
             })
-            .map(|(key, val)| {
+            .map(|(_, val)| {
                 Ok((
-                    ProtocolId::from_slice(&key.key).ok_or(Lnpbp4PsbtError::InvalidKeyValue)?,
-                    Message::from_slice(val).ok_or(Lnpbp4PsbtError::InvalidKeyValue)?,
+                    ProtocolId::copy_from_slice(PSBT_LNPBP4_PREFIX)
+                        .map_err(|_| Lnpbp4PsbtError::InvalidKeyValue)?,
+                    Message::copy_from_slice(val).map_err(|_| Lnpbp4PsbtError::InvalidKeyValue)?,
                 ))
             })
             .collect::<Result<BTreeMap<_, _>, Lnpbp4PsbtError>>()?;
@@ -137,9 +139,13 @@ impl OutputLnpbp4 for Output {
     /// data will be filtered at the moment of PSBT deserialization and this
     /// function will return `None` only in situations when the key is absent.
     fn lnpbp4_message(&self, protocol_id: ProtocolId) -> Option<Message> {
-        let key = ProprietaryKey::lnpbp4_message(protocol_id);
+        let key = PropKey::lnpbp4_message(protocol_id);
         let data = self.proprietary.get(&key)?;
-        Message::from_slice(data)
+        if let Ok(msg) = Message::copy_from_slice(data) {
+            Some(msg)
+        } else {
+            None
+        }
     }
 
     /// Returns a valid LNPBP-4 entropy value, if present.
@@ -149,7 +155,7 @@ impl OutputLnpbp4 for Output {
     /// data will be filtered at the moment of PSBT deserialization and this
     /// function will return `None` only in situations when the key is absent.
     fn lnpbp4_entropy(&self) -> Option<u64> {
-        let key = ProprietaryKey::lnpbp4_entropy();
+        let key = PropKey::lnpbp4_entropy();
         let data = self.proprietary.get(&key)?;
         if data.len() != 8 {
             return None;
@@ -166,7 +172,7 @@ impl OutputLnpbp4 for Output {
     /// If the key is present, but it's value can't be deserialized as a valid
     /// minimal tree depth value.
     fn lnpbp4_min_tree_depth(&self) -> Option<u8> {
-        let key = ProprietaryKey::lnpbp4_min_tree_depth();
+        let key = PropKey::lnpbp4_min_tree_depth();
         let data = self.proprietary.get(&key)?;
         if data.len() != 1 {
             return None;
@@ -190,15 +196,15 @@ impl OutputLnpbp4 for Output {
         protocol_id: ProtocolId,
         message: Message,
     ) -> Result<bool, Lnpbp4PsbtError> {
-        let key = ProprietaryKey::lnpbp4_message(protocol_id);
+        let key = PropKey::lnpbp4_message(protocol_id);
         let val = message.to_vec();
         if let Some(v) = self.proprietary.get(&key) {
-            if v != &val {
+            if v != &val.into() {
                 return Err(Lnpbp4PsbtError::InvalidKeyValue);
             }
             return Ok(false);
         }
-        self.proprietary.insert(key, val);
+        self.proprietary.insert(key, val.into());
         Ok(true)
     }
 
@@ -214,15 +220,15 @@ impl OutputLnpbp4 for Output {
     /// If the entropy was already set with a different value than the provided
     /// one.
     fn set_lnpbp4_entropy(&mut self, entropy: u64) -> Result<bool, Lnpbp4PsbtError> {
-        let key = ProprietaryKey::lnpbp4_entropy();
+        let key = PropKey::lnpbp4_entropy();
         let val = entropy.to_le_bytes().to_vec();
         if let Some(v) = self.proprietary.get(&key) {
-            if v != &val {
+            if v != &val.into() {
                 return Err(Lnpbp4PsbtError::InvalidKeyValue);
             }
             return Ok(false);
         }
-        self.proprietary.insert(key, val);
+        self.proprietary.insert(key, val.into());
         Ok(true)
     }
 
@@ -233,9 +239,9 @@ impl OutputLnpbp4 for Output {
     /// Previous minimal tree depth value, if it was present and valid - or None
     /// if the value was absent or invalid (the new value is still assigned).
     fn set_lnpbp4_min_tree_depth(&mut self, min_depth: u8) -> Option<u8> {
-        let key = ProprietaryKey::lnpbp4_min_tree_depth();
+        let key = PropKey::lnpbp4_min_tree_depth();
         let val = vec![min_depth];
         let prev = self.lnpbp4_min_tree_depth();
-        self.proprietary.insert(key, val).and(prev)
+        self.proprietary.insert(key, val.into()).and(prev)
     }
 }

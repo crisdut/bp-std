@@ -32,17 +32,19 @@
 //! commitments.
 
 use amplify::confinement::{Confined, U16};
-use bitcoin::psbt::raw::ProprietaryKey;
-use bitcoin::psbt::Output;
-use bp::dbc::tapret::TapretPathProof;
+use bpstd::hashes::hex::{Case, DisplayHex};
 use commit_verify::mpc;
+use dbc::tapret::TapretPathProof;
 use strict_encoding::{StrictDeserialize, StrictSerialize};
+
+use crate::{Output, PropKey};
 
 /// PSBT proprietary key prefix used for tapreturn commitment.
 pub const PSBT_TAPRET_PREFIX: &[u8] = b"TAPRET";
 
 /// Proprietary key subtype for PSBT inputs containing the applied tapret tweak
 /// information.
+#[allow(dead_code)]
 pub const PSBT_IN_TAPRET_TWEAK: u8 = 0x00;
 
 /// Proprietary key subtype marking PSBT outputs which may host tapreturn
@@ -59,43 +61,43 @@ pub const PSBT_OUT_TAPRET_PROOF: u8 = 0x02;
 /// keys.
 pub trait ProprietaryKeyTapret {
     /// Constructs [`PSBT_IN_TAPRET_TWEAK`] proprietary key.
-    fn tapret_tweak() -> ProprietaryKey {
-        ProprietaryKey {
-            prefix: PSBT_TAPRET_PREFIX.to_vec(),
-            subtype: PSBT_IN_TAPRET_TWEAK,
-            key: vec![],
+    fn tapret_tweak() -> PropKey {
+        PropKey {
+            identifier: PSBT_TAPRET_PREFIX.to_hex_string(Case::Upper),
+            subtype: PSBT_IN_TAPRET_TWEAK.into(),
+            data: vec![],
         }
     }
 
     /// Constructs [`PSBT_OUT_TAPRET_HOST`] proprietary key.
-    fn tapret_host() -> ProprietaryKey {
-        ProprietaryKey {
-            prefix: PSBT_TAPRET_PREFIX.to_vec(),
-            subtype: PSBT_OUT_TAPRET_HOST,
-            key: vec![],
+    fn tapret_host() -> PropKey {
+        PropKey {
+            identifier: PSBT_TAPRET_PREFIX.to_hex_string(Case::Upper),
+            subtype: PSBT_OUT_TAPRET_HOST.into(),
+            data: vec![],
         }
     }
 
     /// Constructs [`PSBT_OUT_TAPRET_COMMITMENT`] proprietary key.
-    fn tapret_commitment() -> ProprietaryKey {
-        ProprietaryKey {
-            prefix: PSBT_TAPRET_PREFIX.to_vec(),
-            subtype: PSBT_OUT_TAPRET_COMMITMENT,
-            key: vec![],
+    fn tapret_commitment() -> PropKey {
+        PropKey {
+            identifier: PSBT_TAPRET_PREFIX.to_hex_string(Case::Upper),
+            subtype: PSBT_OUT_TAPRET_COMMITMENT.into(),
+            data: vec![],
         }
     }
 
     /// Constructs [`PSBT_OUT_TAPRET_PROOF`] proprietary key.
-    fn tapret_proof() -> ProprietaryKey {
-        ProprietaryKey {
-            prefix: PSBT_TAPRET_PREFIX.to_vec(),
-            subtype: PSBT_OUT_TAPRET_PROOF,
-            key: vec![],
+    fn tapret_proof() -> PropKey {
+        PropKey {
+            identifier: PSBT_TAPRET_PREFIX.to_hex_string(Case::Upper),
+            subtype: PSBT_OUT_TAPRET_PROOF.into(),
+            data: vec![],
         }
     }
 }
 
-impl ProprietaryKeyTapret for ProprietaryKey {}
+impl ProprietaryKeyTapret for PropKey {}
 
 /// Errors processing tapret-related proprietary PSBT keys and their values.
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, Display, Error, From)]
@@ -135,10 +137,7 @@ impl OutputTapret for Output {
     /// Returns whether this output may contain tapret commitment. This is
     /// detected by the presence of [`PSBT_OUT_TAPRET_HOST`] key.
     #[inline]
-    fn is_tapret_host(&self) -> bool {
-        self.proprietary
-            .contains_key(&ProprietaryKey::tapret_host())
-    }
+    fn is_tapret_host(&self) -> bool { self.proprietary.contains_key(&PropKey::tapret_host()) }
 
     /// Sets [`PSBT_OUT_TAPRET_HOST`] key.
     ///
@@ -152,8 +151,7 @@ impl OutputTapret for Output {
             return Err(TapretKeyError::NotTaprootOutput);
         }
 
-        self.proprietary
-            .insert(ProprietaryKey::tapret_host(), vec![]);
+        self.proprietary.insert(PropKey::tapret_host(), vec![].into());
 
         Ok(())
     }
@@ -178,8 +176,12 @@ impl OutputTapret for Output {
     /// moment of PSBT deserialization and this function will return `None`
     /// only in situations when the commitment is absent.
     fn tapret_commitment(&self) -> Option<mpc::Commitment> {
-        let data = self.proprietary.get(&ProprietaryKey::tapret_commitment())?;
-        mpc::Commitment::from_slice(data)
+        let data = self.proprietary.get(&PropKey::tapret_commitment())?;
+        if let Ok(commit) = mpc::Commitment::copy_from_slice(data) {
+            Some(commit)
+        } else {
+            None
+        }
     }
 
     /// Assigns value of the tapreturn commitment to this PSBT output, by
@@ -205,14 +207,10 @@ impl OutputTapret for Output {
             return Err(TapretKeyError::OutputAlreadyHasCommitment);
         }
 
-        self.proprietary
-            .insert(ProprietaryKey::tapret_commitment(), commitment.to_vec());
+        self.proprietary.insert(PropKey::tapret_commitment(), commitment.to_vec().into());
 
-        let val = proof
-            .to_strict_serialized::<U16>()
-            .map_err(|_| TapretKeyError::InvalidProof)?;
-        self.proprietary
-            .insert(ProprietaryKey::tapret_proof(), val.into_inner());
+        let val = proof.to_strict_serialized::<U16>().map_err(|_| TapretKeyError::InvalidProof)?;
+        self.proprietary.insert(PropKey::tapret_proof(), val.into_inner().into());
 
         Ok(())
     }
@@ -239,7 +237,7 @@ impl OutputTapret for Output {
     /// on `bp-dpc` crate, which will result in circular dependency with the
     /// current crate.
     fn tapret_proof(&self) -> Option<TapretPathProof> {
-        let data = self.proprietary.get(&ProprietaryKey::tapret_proof())?;
+        let data = self.proprietary.get(&PropKey::tapret_proof())?;
         let vec = Confined::try_from_iter(data.iter().copied()).ok()?;
         TapretPathProof::from_strict_serialized::<U16>(vec).ok()
     }
